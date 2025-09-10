@@ -54,7 +54,7 @@ export class AuthService {
       logger.info('Registering new user', { email: userData.email });
 
       // Check if user already exists
-      const existingUser = User.findByEmail(userData.email);
+      const existingUser = await User.findByEmail(userData.email);
       if (existingUser) {
         throw new Error('User with this email already exists');
       }
@@ -63,7 +63,7 @@ export class AuthService {
       const hashedPassword = await this.hashPassword(userData.password);
 
       // Create user
-      const user = User.create({
+      const user = await User.create({
         email: userData.email,
         password: hashedPassword,
         name: userData.name,
@@ -96,7 +96,7 @@ export class AuthService {
       logger.info('User attempting login', { email });
 
       // Find user by email
-      const user = User.findByEmail(email);
+      const user = await User.findByEmail(email);
       if (!user) {
         throw new Error('Invalid email or password');
       }
@@ -130,7 +130,7 @@ export class AuthService {
   // Get user profile
   async getProfile(userId) {
     try {
-      const user = User.findById(userId);
+      const user = await User.findById(userId);
       if (!user) {
         throw new Error('User not found');
       }
@@ -181,7 +181,7 @@ export class AuthService {
     try {
       logger.info('Changing user password', { userId });
 
-      const user = User.findById(userId);
+      const user = await User.findById(userId);
       if (!user) {
         throw new Error('User not found');
       }
@@ -196,7 +196,7 @@ export class AuthService {
       const hashedNewPassword = await this.hashPassword(newPassword);
 
       // Update password
-      User.update(userId, { password: hashedNewPassword });
+      await User.update(userId, { password: hashedNewPassword });
 
       logger.info('Password changed successfully', { userId });
 
@@ -216,7 +216,7 @@ export class AuthService {
       }
 
       // Check if user still exists
-      const user = User.findById(decoded.id);
+      const user = await User.findById(decoded.id);
       if (!user) {
         throw new Error('User no longer exists');
       }
@@ -257,7 +257,7 @@ export class AuthService {
   // Get all users (admin functionality)
   async getAllUsers() {
     try {
-      const users = User.findAll();
+      const users = await User.findAll();
       
       // Return users without passwords
       return users.map(user => {

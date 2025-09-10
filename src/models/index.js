@@ -1,13 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import { format } from 'date-fns';
+import { pool } from '../config/database.js';
+import { logger } from '../utils/logger.js';
 
-// In-memory storage
-export const db = {
-  clients: [],
-  invoices: [],
-  templates: [],
-  users: [] // For authentication
-};
+// PostgreSQL-backed models
 
 // Client Model
 export class Client {
@@ -269,58 +265,141 @@ export class Template {
   }
 }
 
-// User Model (for authentication)
+// User Model (PostgreSQL-backed)
 export class User {
   constructor(data) {
-    this.id = data.id || uuidv4();
+    this.id = data.id;
     this.email = data.email;
-    this.password = data.password; // Will be hashed
+    this.password = data.password_hash || data.password;
     this.name = data.name;
-    this.businessInfo = data.businessInfo || {};
+    this.businessInfo = data.business_info || data.businessInfo || {};
     this.settings = data.settings || {};
-    this.createdAt = data.createdAt || new Date().toISOString();
-    this.updatedAt = data.updatedAt || new Date().toISOString();
+    this.createdAt = data.created_at || data.createdAt;
+    this.updatedAt = data.updated_at || data.updatedAt;
   }
 
-  static findAll() {
-    return db.users;
+  static async findAll() {
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM users ORDER BY created_at DESC'
+      );
+      return rows.map(row => new User(row));
+    } catch (error) {
+      logger.error('Error finding all users:', error);
+      throw error;
+    }
   }
 
-  static findById(id) {
-    return db.users.find(user => user.id === id);
+  static async findById(id) {
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM users WHERE id = $1',
+        [id]
+      );
+      return rows.length > 0 ? new User(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error finding user by ID:', error);
+      throw error;
+    }
   }
 
-  static findByEmail(email) {
-    return db.users.find(user => user.email === email);
+  static async findByEmail(email) {
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM users WHERE email = $1',
+        [email]
+      );
+      return rows.length > 0 ? new User(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error finding user by email:', error);
+      throw error;
+    }
   }
 
-  static create(data) {
-    const user = new User(data);
-    db.users.push(user);
-    return user;
+  static async create(data) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO users (email, password_hash, name, business_info, settings)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [
+          data.email,
+          data.password, // Should be hashed before calling this
+          data.name,
+          JSON.stringify(data.businessInfo || {}),
+          JSON.stringify(data.settings || {})
+        ]
+      );
+      return new User(rows[0]);
+    } catch (error) {
+      logger.error('Error creating user:', error);
+      throw error;
+    }
   }
 
-  static update(id, data) {
-    const index = db.users.findIndex(user => user.id === id);
-    if (index === -1) return null;
-    
-    const updatedUser = new User({
-      ...db.users[index],
-      ...data,
-      id,
-      updatedAt: new Date().toISOString()
-    });
-    
-    db.users[index] = updatedUser;
-    return updatedUser;
+  static async update(id, data) {
+    try {
+      const updates = [];
+      const values = [];
+      let paramCount = 1;
+
+      if (data.email !== undefined) {
+        updates.push(`email = $${paramCount++}`);
+        values.push(data.email);
+      }
+      if (data.password !== undefined) {
+        updates.push(`password_hash = $${paramCount++}`);
+        values.push(data.password);
+      }
+      if (data.name !== undefined) {
+        updates.push(`name = $${paramCount++}`);
+        values.push(data.name);
+      }
+      if (data.businessInfo !== undefined) {
+        updates.push(`business_info = $${paramCount++}`);
+        values.push(JSON.stringify(data.businessInfo));
+      }
+      if (data.settings !== undefined) {
+        updates.push(`settings = $${paramCount++}`);
+        values.push(JSON.stringify(data.settings));
+      }
+
+      if (updates.length === 0) return null;
+
+      values.push(id);
+      const { rows } = await pool.query(
+        `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+        values
+      );
+      
+      return rows.length > 0 ? new User(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error updating user:', error);
+      throw error;
+    }
   }
 
-  static delete(id) {
-    const index = db.users.findIndex(user => user.id === id);
-    if (index === -1) return false;
-    
-    db.users.splice(index, 1);
-    return true;
+  static async delete(id) {
+    try {
+      const { rowCount } = await pool.query(
+        'DELETE FROM users WHERE id = $1',
+        [id]
+      );
+      return rowCount > 0;
+    } catch (error) {
+      logger.error('Error deleting user:', error);
+      throw error;
+    }
+  }
+
+  // Get user's invoices
+  async getInvoices() {
+    return await Invoice.findByUserId(this.id);
+  }
+
+  // Get user's clients
+  async getClients() {
+    return await Client.findByUserId(this.id);
   }
 }
 

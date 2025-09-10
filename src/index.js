@@ -12,6 +12,7 @@ import authRoutes from './routes/authRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
 import { optionalAuthenticate } from './middleware/authMiddleware.js';
+import { testConnection, initDatabase } from './config/database.js';
 
 // Load environment variables
 dotenv.config();
@@ -104,11 +105,31 @@ app.get('*', (req, res) => {
   res.sendFile(indexPath);
 });
 
-// Start server
-app.listen(PORT, () => {
+// Start server with database initialization
+app.listen(PORT, async () => {
   logger.info(`🚀 Freelance Invoice Generator server running on port ${PORT}`);
   logger.info(`📋 Health check available at http://localhost:${PORT}/health`);
   logger.info(`🎯 Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  // Initialize database connection
+  const dbConnected = await testConnection();
+  if (dbConnected) {
+    try {
+      await initDatabase();
+      logger.info('💾 Database initialized successfully');
+    } catch (error) {
+      logger.error('❌ Database initialization failed:', error);
+      if (process.env.NODE_ENV === 'production') {
+        process.exit(1);
+      }
+    }
+  } else {
+    logger.warn('⚠️ Database connection failed - running without persistence');
+    if (process.env.NODE_ENV === 'production') {
+      logger.error('❌ Database required in production mode');
+      process.exit(1);
+    }
+  }
 });
 
 // Graceful shutdown
