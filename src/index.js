@@ -8,8 +8,10 @@ import { fileURLToPath } from 'url';
 import invoiceRoutes from './routes/invoiceRoutes.js';
 import clientRoutes from './routes/clientRoutes.js';
 import templateRoutes from './routes/templateRoutes.js';
+import authRoutes from './routes/authRoutes.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { logger } from './utils/logger.js';
+import { optionalAuthenticate } from './middleware/authMiddleware.js';
 
 // Load environment variables
 dotenv.config();
@@ -33,6 +35,13 @@ app.use(express.urlencoded({ extended: true }));
 // Static files
 app.use('/static', express.static(path.join(__dirname, '../assets')));
 app.use('/templates', express.static(path.join(__dirname, '../templates')));
+// Serve built client files in production, fallback to public in development
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../dist')));
+} else {
+  app.use(express.static(path.join(__dirname, '../public')));
+  app.use('/dist', express.static(path.join(__dirname, '../dist')));
+}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -43,7 +52,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Add optional authentication to all API routes (for user context)
+app.use('/api', optionalAuthenticate);
+
 // API Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/clients', clientRoutes);
 app.use('/api/templates', templateRoutes);
@@ -55,9 +68,16 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       health: '/health',
+      auth: '/api/auth',
       invoices: '/api/invoices',
       clients: '/api/clients',
       templates: '/api/templates'
+    },
+    authEndpoints: {
+      register: 'POST /api/auth/register',
+      login: 'POST /api/auth/login',
+      profile: 'GET /api/auth/me',
+      logout: 'POST /api/auth/logout'
     }
   });
 });
@@ -65,13 +85,23 @@ app.get('/', (req, res) => {
 // Error handling middleware
 app.use(errorHandler);
 
-// 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({
-    error: 'Route not found',
-    method: req.method,
-    path: req.originalUrl
-  });
+// SPA routing - serve index.html for non-API routes
+app.get('*', (req, res) => {
+  // Don't handle API routes here
+  if (req.originalUrl.startsWith('/api')) {
+    return res.status(404).json({
+      error: 'API Route not found',
+      method: req.method,
+      path: req.originalUrl
+    });
+  }
+  
+  // Serve the appropriate index.html based on environment
+  const indexPath = process.env.NODE_ENV === 'production' 
+    ? path.join(__dirname, '../dist/index.html')
+    : path.join(__dirname, '../public/index.html');
+  
+  res.sendFile(indexPath);
 });
 
 // Start server
