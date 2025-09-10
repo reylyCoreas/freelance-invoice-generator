@@ -5,194 +5,438 @@ import { logger } from '../utils/logger.js';
 
 // PostgreSQL-backed models
 
-// Client Model
+// Client Model (PostgreSQL-backed)
 export class Client {
   constructor(data) {
-    this.id = data.id || uuidv4();
+    this.id = data.id;
+    this.userId = data.user_id || data.userId;
     this.name = data.name;
     this.email = data.email;
     this.phone = data.phone || '';
     this.address = data.address || {};
     this.company = data.company || '';
-    this.taxId = data.taxId || '';
-    this.paymentTerms = data.paymentTerms || 30;
+    this.taxId = data.tax_id || data.taxId || '';
+    this.paymentTerms = data.payment_terms || data.paymentTerms || 30;
     this.currency = data.currency || 'USD';
     this.notes = data.notes || '';
-    this.createdAt = data.createdAt || new Date().toISOString();
-    this.updatedAt = data.updatedAt || new Date().toISOString();
+    this.createdAt = data.created_at || data.createdAt;
+    this.updatedAt = data.updated_at || data.updatedAt;
   }
 
-  static findAll() {
-    return db.clients;
+  static async findAll(userId = null) {
+    try {
+      let query = 'SELECT * FROM clients';
+      let params = [];
+      
+      if (userId) {
+        query += ' WHERE user_id = $1';
+        params.push(userId);
+      }
+      
+      query += ' ORDER BY created_at DESC';
+      
+      const { rows } = await pool.query(query, params);
+      return rows.map(row => new Client(row));
+    } catch (error) {
+      logger.error('Error finding clients:', error);
+      throw error;
+    }
   }
 
-  static findById(id) {
-    return db.clients.find(client => client.id === id);
+  static async findById(id) {
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM clients WHERE id = $1',
+        [id]
+      );
+      return rows.length > 0 ? new Client(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error finding client by ID:', error);
+      throw error;
+    }
   }
 
-  static create(data) {
-    const client = new Client(data);
-    db.clients.push(client);
-    return client;
+  static async findByUserId(userId) {
+    return await this.findAll(userId);
   }
 
-  static update(id, data) {
-    const index = db.clients.findIndex(client => client.id === id);
-    if (index === -1) return null;
-    
-    const updatedClient = new Client({
-      ...db.clients[index],
-      ...data,
-      id,
-      updatedAt: new Date().toISOString()
-    });
-    
-    db.clients[index] = updatedClient;
-    return updatedClient;
+  static async searchByName(userId, searchTerm) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT * FROM clients 
+         WHERE user_id = $1 
+         AND (name ILIKE $2 OR company ILIKE $2 OR email ILIKE $2)
+         ORDER BY name ASC`,
+        [userId, `%${searchTerm}%`]
+      );
+      return rows.map(row => new Client(row));
+    } catch (error) {
+      logger.error('Error searching clients:', error);
+      throw error;
+    }
   }
 
-  static delete(id) {
-    const index = db.clients.findIndex(client => client.id === id);
-    if (index === -1) return false;
-    
-    db.clients.splice(index, 1);
-    return true;
+  static async create(data) {
+    try {
+      const { rows } = await pool.query(
+        `INSERT INTO clients (user_id, name, email, phone, company, tax_id, address, payment_terms, currency, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING *`,
+        [
+          data.userId,
+          data.name,
+          data.email,
+          data.phone || null,
+          data.company || null,
+          data.taxId || null,
+          JSON.stringify(data.address || {}),
+          data.paymentTerms || 30,
+          data.currency || 'USD',
+          data.notes || null
+        ]
+      );
+      return new Client(rows[0]);
+    } catch (error) {
+      logger.error('Error creating client:', error);
+      throw error;
+    }
   }
 
-  getInvoices() {
-    return db.invoices.filter(invoice => invoice.clientId === this.id);
+  static async update(id, data) {
+    try {
+      const updates = [];
+      const values = [];
+      let paramCount = 1;
+
+      const fields = {
+        name: data.name,
+        email: data.email,
+        phone: data.phone,
+        company: data.company,
+        tax_id: data.taxId,
+        address: data.address ? JSON.stringify(data.address) : undefined,
+        payment_terms: data.paymentTerms,
+        currency: data.currency,
+        notes: data.notes
+      };
+
+      Object.entries(fields).forEach(([key, value]) => {
+        if (value !== undefined) {
+          updates.push(`${key} = $${paramCount++}`);
+          values.push(value);
+        }
+      });
+
+      if (updates.length === 0) return null;
+
+      values.push(id);
+      const { rows } = await pool.query(
+        `UPDATE clients SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+        values
+      );
+      
+      return rows.length > 0 ? new Client(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error updating client:', error);
+      throw error;
+    }
+  }
+
+  static async delete(id) {
+    try {
+      const { rowCount } = await pool.query(
+        'DELETE FROM clients WHERE id = $1',
+        [id]
+      );
+      return rowCount > 0;
+    } catch (error) {
+      logger.error('Error deleting client:', error);
+      throw error;
+    }
+  }
+
+  async getInvoices() {
+    return await Invoice.findByClientId(this.id);
   }
 }
 
-// Invoice Model
+// Invoice Model (PostgreSQL-backed)
 export class Invoice {
   constructor(data) {
-    this.id = data.id || uuidv4();
-    this.invoiceNumber = data.invoiceNumber || this.generateInvoiceNumber();
-    this.clientId = data.clientId;
-    this.status = data.status || 'draft'; // draft, sent, paid, overdue, cancelled
-    this.issueDate = data.issueDate || new Date().toISOString().split('T')[0];
-    this.dueDate = data.dueDate || this.calculateDueDate(data.paymentTerms || 30);
-    this.paymentTerms = data.paymentTerms || 30;
+    this.id = data.id;
+    this.userId = data.user_id || data.userId;
+    this.clientId = data.client_id || data.clientId;
+    this.invoiceNumber = data.invoice_number || data.invoiceNumber;
+    this.status = data.status || 'draft';
+    this.issueDate = data.issue_date || data.issueDate;
+    this.dueDate = data.due_date || data.dueDate;
+    this.paymentTerms = data.payment_terms || data.paymentTerms || 30;
     this.items = data.items || [];
-    this.subtotal = data.subtotal || this.calculateSubtotal();
-    this.taxRate = data.taxRate || parseFloat(process.env.TAX_RATE || '0.08');
-    this.taxAmount = data.taxAmount || this.calculateTaxAmount();
-    this.discountAmount = data.discountAmount || 0;
-    this.total = data.total || this.calculateTotal();
+    this.subtotal = parseFloat(data.subtotal) || 0;
+    this.taxRate = parseFloat(data.tax_rate || data.taxRate) || parseFloat(process.env.TAX_RATE || '0.08');
+    this.taxAmount = parseFloat(data.tax_amount || data.taxAmount) || 0;
+    this.discountAmount = parseFloat(data.discount_amount || data.discountAmount) || 0;
+    this.total = parseFloat(data.total) || 0;
     this.currency = data.currency || process.env.CURRENCY || 'USD';
     this.notes = data.notes || '';
-    this.templateId = data.templateId || 'default';
-    this.pdfPath = data.pdfPath || '';
-    this.sentAt = data.sentAt || null;
-    this.paidAt = data.paidAt || null;
-    this.createdAt = data.createdAt || new Date().toISOString();
-    this.updatedAt = data.updatedAt || new Date().toISOString();
+    this.templateId = data.template_id || data.templateId || 'default';
+    this.pdfPath = data.pdf_path || data.pdfPath || '';
+    this.sentAt = data.sent_at || data.sentAt;
+    this.paidAt = data.paid_at || data.paidAt;
+    this.createdAt = data.created_at || data.createdAt;
+    this.updatedAt = data.updated_at || data.updatedAt;
   }
 
-  generateInvoiceNumber() {
-    const year = new Date().getFullYear();
-    const month = String(new Date().getMonth() + 1).padStart(2, '0');
-    const count = db.invoices.length + 1;
-    return `INV-${year}${month}-${String(count).padStart(4, '0')}`;
-  }
-
-  calculateDueDate(paymentTerms) {
-    const issueDate = new Date(this.issueDate || new Date());
-    issueDate.setDate(issueDate.getDate() + paymentTerms);
-    return issueDate.toISOString().split('T')[0];
-  }
-
-  calculateSubtotal() {
-    return this.items.reduce((sum, item) => sum + (item.quantity * item.rate), 0);
-  }
-
-  calculateTaxAmount() {
-    const subtotal = this.calculateSubtotal();
-    return subtotal * this.taxRate;
-  }
-
-  calculateTotal() {
-    const subtotal = this.calculateSubtotal();
-    const taxAmount = subtotal * this.taxRate;
-    return subtotal + taxAmount - (this.discountAmount || 0);
-  }
-
-  static findAll(filters = {}) {
-    let invoices = db.invoices;
-    
-    if (filters.clientId) {
-      invoices = invoices.filter(invoice => invoice.clientId === filters.clientId);
+  static async generateInvoiceNumber() {
+    try {
+      const year = new Date().getFullYear();
+      const month = String(new Date().getMonth() + 1).padStart(2, '0');
+      
+      const { rows } = await pool.query(
+        'SELECT COUNT(*) as count FROM invoices WHERE invoice_number LIKE $1',
+        [`INV-${year}${month}-%`]
+      );
+      
+      const count = parseInt(rows[0].count) + 1;
+      return `INV-${year}${month}-${String(count).padStart(4, '0')}`;
+    } catch (error) {
+      // Fallback to timestamp-based number
+      return `INV-${Date.now()}`;
     }
-    
-    if (filters.status) {
-      invoices = invoices.filter(invoice => invoice.status === filters.status);
-    }
+  }
 
-    if (filters.dateRange) {
-      const { start, end } = filters.dateRange;
-      invoices = invoices.filter(invoice => {
-        const issueDate = new Date(invoice.issueDate);
-        return issueDate >= new Date(start) && issueDate <= new Date(end);
+  static calculateDueDate(issueDate, paymentTerms) {
+    const date = new Date(issueDate);
+    date.setDate(date.getDate() + paymentTerms);
+    return date.toISOString().split('T')[0];
+  }
+
+  static calculateSubtotal(items) {
+    return items.reduce((sum, item) => sum + (parseFloat(item.quantity) * parseFloat(item.rate)), 0);
+  }
+
+  static calculateTaxAmount(subtotal, taxRate) {
+    return subtotal * parseFloat(taxRate);
+  }
+
+  static calculateTotal(subtotal, taxAmount, discountAmount = 0) {
+    return subtotal + taxAmount - parseFloat(discountAmount || 0);
+  }
+
+  static async findAll(filters = {}) {
+    try {
+      let query = 'SELECT * FROM invoices';
+      const conditions = [];
+      const values = [];
+      let paramCount = 1;
+
+      if (filters.userId) {
+        conditions.push(`user_id = $${paramCount++}`);
+        values.push(filters.userId);
+      }
+
+      if (filters.clientId) {
+        conditions.push(`client_id = $${paramCount++}`);
+        values.push(filters.clientId);
+      }
+
+      if (filters.status) {
+        conditions.push(`status = $${paramCount++}`);
+        values.push(filters.status);
+      }
+
+      if (filters.dateRange) {
+        conditions.push(`issue_date >= $${paramCount++} AND issue_date <= $${paramCount++}`);
+        values.push(filters.dateRange.start, filters.dateRange.end);
+      }
+
+      if (conditions.length > 0) {
+        query += ' WHERE ' + conditions.join(' AND ');
+      }
+
+      query += ' ORDER BY created_at DESC';
+
+      const { rows } = await pool.query(query, values);
+      return rows.map(row => new Invoice(row));
+    } catch (error) {
+      logger.error('Error finding invoices:', error);
+      throw error;
+    }
+  }
+
+  static async findById(id) {
+    try {
+      const { rows } = await pool.query(
+        'SELECT * FROM invoices WHERE id = $1',
+        [id]
+      );
+      return rows.length > 0 ? new Invoice(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error finding invoice by ID:', error);
+      throw error;
+    }
+  }
+
+  static async findByUserId(userId) {
+    return await this.findAll({ userId });
+  }
+
+  static async findByClientId(clientId) {
+    return await this.findAll({ clientId });
+  }
+
+  static async create(data) {
+    try {
+      // Calculate totals
+      const subtotal = this.calculateSubtotal(data.items || []);
+      const taxAmount = this.calculateTaxAmount(subtotal, data.taxRate || 0.08);
+      const total = this.calculateTotal(subtotal, taxAmount, data.discountAmount);
+      
+      // Generate invoice number if not provided
+      const invoiceNumber = data.invoiceNumber || await this.generateInvoiceNumber();
+      
+      // Calculate due date
+      const dueDate = data.dueDate || this.calculateDueDate(data.issueDate, data.paymentTerms || 30);
+
+      const { rows } = await pool.query(
+        `INSERT INTO invoices (
+          user_id, client_id, invoice_number, status, issue_date, due_date, 
+          payment_terms, items, subtotal, tax_rate, tax_amount, discount_amount, 
+          total, currency, notes, template_id
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         RETURNING *`,
+        [
+          data.userId,
+          data.clientId,
+          invoiceNumber,
+          data.status || 'draft',
+          data.issueDate || new Date().toISOString().split('T')[0],
+          dueDate,
+          data.paymentTerms || 30,
+          JSON.stringify(data.items || []),
+          subtotal,
+          data.taxRate || 0.08,
+          taxAmount,
+          data.discountAmount || 0,
+          total,
+          data.currency || 'USD',
+          data.notes || null,
+          data.templateId || 'default'
+        ]
+      );
+      return new Invoice(rows[0]);
+    } catch (error) {
+      logger.error('Error creating invoice:', error);
+      throw error;
+    }
+  }
+
+  static async update(id, data) {
+    try {
+      const updates = [];
+      const values = [];
+      let paramCount = 1;
+
+      // Handle items update with recalculation
+      if (data.items) {
+        const subtotal = this.calculateSubtotal(data.items);
+        const taxRate = data.taxRate !== undefined ? parseFloat(data.taxRate) : undefined;
+        const taxAmount = taxRate !== undefined ? this.calculateTaxAmount(subtotal, taxRate) : undefined;
+        const discountAmount = data.discountAmount !== undefined ? parseFloat(data.discountAmount) : undefined;
+        
+        updates.push(`items = $${paramCount++}`);
+        values.push(JSON.stringify(data.items));
+        
+        updates.push(`subtotal = $${paramCount++}`);
+        values.push(subtotal);
+        
+        if (taxRate !== undefined) {
+          updates.push(`tax_rate = $${paramCount++}`);
+          values.push(taxRate);
+          
+          updates.push(`tax_amount = $${paramCount++}`);
+          values.push(taxAmount);
+        }
+        
+        if (discountAmount !== undefined) {
+          updates.push(`discount_amount = $${paramCount++}`);
+          values.push(discountAmount);
+        }
+        
+        // Recalculate total (we'll need to fetch current values if not all provided)
+        const currentInvoice = await this.findById(id);
+        const currentTaxRate = taxRate !== undefined ? taxRate : currentInvoice.taxRate;
+        const currentDiscountAmount = discountAmount !== undefined ? discountAmount : currentInvoice.discountAmount;
+        const newTaxAmount = taxAmount !== undefined ? taxAmount : this.calculateTaxAmount(subtotal, currentTaxRate);
+        const total = this.calculateTotal(subtotal, newTaxAmount, currentDiscountAmount);
+        
+        updates.push(`total = $${paramCount++}`);
+        values.push(total);
+      }
+
+      const simpleFields = {
+        client_id: data.clientId,
+        status: data.status,
+        issue_date: data.issueDate,
+        due_date: data.dueDate,
+        payment_terms: data.paymentTerms,
+        currency: data.currency,
+        notes: data.notes,
+        template_id: data.templateId,
+        pdf_path: data.pdfPath,
+        sent_at: data.sentAt,
+        paid_at: data.paidAt
+      };
+
+      Object.entries(simpleFields).forEach(([key, value]) => {
+        if (value !== undefined) {
+          updates.push(`${key} = $${paramCount++}`);
+          values.push(value);
+        }
       });
+
+      if (updates.length === 0) return null;
+
+      values.push(id);
+      const { rows } = await pool.query(
+        `UPDATE invoices SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+        values
+      );
+      
+      return rows.length > 0 ? new Invoice(rows[0]) : null;
+    } catch (error) {
+      logger.error('Error updating invoice:', error);
+      throw error;
     }
-
-    return invoices.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   }
 
-  static findById(id) {
-    return db.invoices.find(invoice => invoice.id === id);
-  }
-
-  static create(data) {
-    const invoice = new Invoice(data);
-    db.invoices.push(invoice);
-    return invoice;
-  }
-
-  static update(id, data) {
-    const index = db.invoices.findIndex(invoice => invoice.id === id);
-    if (index === -1) return null;
-    
-    const updatedInvoice = new Invoice({
-      ...db.invoices[index],
-      ...data,
-      id,
-      updatedAt: new Date().toISOString()
-    });
-    
-    // Recalculate amounts if items changed
-    if (data.items) {
-      updatedInvoice.subtotal = updatedInvoice.calculateSubtotal();
-      updatedInvoice.taxAmount = updatedInvoice.calculateTaxAmount();
-      updatedInvoice.total = updatedInvoice.calculateTotal();
+  static async delete(id) {
+    try {
+      const { rowCount } = await pool.query(
+        'DELETE FROM invoices WHERE id = $1',
+        [id]
+      );
+      return rowCount > 0;
+    } catch (error) {
+      logger.error('Error deleting invoice:', error);
+      throw error;
     }
-    
-    db.invoices[index] = updatedInvoice;
-    return updatedInvoice;
   }
 
-  static delete(id) {
-    const index = db.invoices.findIndex(invoice => invoice.id === id);
-    if (index === -1) return false;
-    
-    db.invoices.splice(index, 1);
-    return true;
+  async getClient() {
+    return await Client.findById(this.clientId);
   }
 
-  getClient() {
-    return Client.findById(this.clientId);
-  }
-
-  updateStatus(status) {
-    this.status = status;
-    this.updatedAt = new Date().toISOString();
+  async updateStatus(status) {
+    const updateData = { status };
     
     if (status === 'sent' && !this.sentAt) {
-      this.sentAt = new Date().toISOString();
+      updateData.sentAt = new Date().toISOString();
     } else if (status === 'paid' && !this.paidAt) {
-      this.paidAt = new Date().toISOString();
+      updateData.paidAt = new Date().toISOString();
     }
+    
+    return await Invoice.update(this.id, updateData);
   }
 }
 

@@ -67,6 +67,9 @@ class InvoiceApp {
 
         // Invoice form interactions
         this.bindInvoiceFormEvents();
+        
+        // Client search functionality
+        this.bindClientSearchEvents();
     }
 
     bindInvoiceFormEvents() {
@@ -90,6 +93,55 @@ class InvoiceApp {
                 if (container.children.length > 1) {
                     item.remove();
                 }
+            }
+        });
+    }
+
+    bindClientSearchEvents() {
+        const searchInput = document.getElementById('client-search');
+        const dropdown = document.getElementById('client-search-dropdown');
+        const hiddenClientId = document.getElementById('selected-client-id');
+        let searchTimeout;
+
+        if (!searchInput || !dropdown) return;
+
+        // Handle typing in search input
+        searchInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            
+            clearTimeout(searchTimeout);
+            
+            if (query.length < 2) {
+                dropdown.classList.add('hidden');
+                hiddenClientId.value = '';
+                return;
+            }
+            
+            searchTimeout = setTimeout(() => {
+                this.searchClients(query);
+            }, 300);
+        });
+
+        // Handle focus and blur events
+        searchInput.addEventListener('focus', () => {
+            if (searchInput.value.length >= 2) {
+                dropdown.classList.remove('hidden');
+            }
+        });
+
+        searchInput.addEventListener('blur', (e) => {
+            // Delay hiding to allow clicking on dropdown items
+            setTimeout(() => {
+                if (!dropdown.contains(document.activeElement)) {
+                    dropdown.classList.add('hidden');
+                }
+            }, 150);
+        });
+
+        // Handle clicking outside
+        document.addEventListener('click', (e) => {
+            if (!searchInput.contains(e.target) && !dropdown.contains(e.target)) {
+                dropdown.classList.add('hidden');
             }
         });
     }
@@ -608,10 +660,15 @@ class InvoiceApp {
                 throw new Error('Please add at least one invoice item');
             }
             
+            const selectedClientId = document.getElementById('selected-client-id').value;
+            if (!selectedClientId) {
+                throw new Error('Please select a client');
+            }
+            
             await this.apiRequest('/invoices', {
                 method: 'POST',
                 body: JSON.stringify({
-                    clientId: formData.get('clientId'),
+                    clientId: selectedClientId,
                     dueDate: formData.get('dueDate'),
                     items: items,
                     notes: formData.get('notes')
@@ -701,6 +758,87 @@ class InvoiceApp {
 
     editTemplate(templateId) {
         this.showToast('Template editing not implemented in this demo', 'info');
+    }
+
+    async searchClients(query) {
+        try {
+            const response = await this.apiRequest(`/clients/search?q=${encodeURIComponent(query)}`);
+            const clients = response.data || [];
+            
+            this.displayClientSearchResults(clients);
+        } catch (error) {
+            console.error('Failed to search clients:', error);
+            this.displayClientSearchResults([]);
+        }
+    }
+
+    displayClientSearchResults(clients) {
+        const dropdown = document.getElementById('client-search-dropdown');
+        
+        if (!dropdown) return;
+        
+        dropdown.innerHTML = '';
+        
+        if (clients.length === 0) {
+            dropdown.innerHTML = `
+                <div class="px-3 py-2 text-gray-500 text-sm">
+                    <i class="fas fa-search mr-2"></i>No clients found
+                </div>
+                <div class="px-3 py-2 border-t">
+                    <button type="button" onclick="app.showModal('create-client-modal')" class="text-blue-600 hover:text-blue-800 text-sm">
+                        <i class="fas fa-plus mr-1"></i>Create new client
+                    </button>
+                </div>
+            `;
+        } else {
+            clients.forEach(client => {
+                const clientItem = document.createElement('div');
+                clientItem.className = 'px-3 py-2 hover:bg-gray-50 cursor-pointer border-b last:border-b-0';
+                clientItem.innerHTML = `
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <div class="font-medium text-gray-900">${client.name}</div>
+                            <div class="text-sm text-gray-500">
+                                ${client.company ? `${client.company} • ` : ''}${client.email}
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400">
+                            ${client.paymentTerms} days
+                        </div>
+                    </div>
+                `;
+                
+                clientItem.addEventListener('click', () => {
+                    this.selectClient(client);
+                });
+                
+                dropdown.appendChild(clientItem);
+            });
+            
+            // Add option to create new client
+            const createOption = document.createElement('div');
+            createOption.className = 'px-3 py-2 border-t bg-gray-50';
+            createOption.innerHTML = `
+                <button type="button" onclick="app.showModal('create-client-modal')" class="text-blue-600 hover:text-blue-800 text-sm">
+                    <i class="fas fa-plus mr-1"></i>Create new client
+                </button>
+            `;
+            dropdown.appendChild(createOption);
+        }
+        
+        dropdown.classList.remove('hidden');
+    }
+
+    selectClient(client) {
+        const searchInput = document.getElementById('client-search');
+        const hiddenClientId = document.getElementById('selected-client-id');
+        const dropdown = document.getElementById('client-search-dropdown');
+        
+        if (searchInput && hiddenClientId) {
+            searchInput.value = `${client.name}${client.company ? ` (${client.company})` : ''}`;
+            hiddenClientId.value = client.id;
+            dropdown.classList.add('hidden');
+        }
     }
 }
 

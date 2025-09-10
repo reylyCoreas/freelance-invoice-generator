@@ -4,13 +4,14 @@ import { Client, Invoice } from '../models/index.js';
 export class ClientController {
   async getAllClients(req, res, next) {
     try {
-      logger.info('Fetching all clients');
+      const userId = req.user?.id;
+      logger.info('Fetching all clients', { userId });
       
-      const clients = Client.findAll();
+      const clients = await Client.findAll(userId);
       
       // Add invoice count and total for each client
-      const clientsWithStats = clients.map(client => {
-        const invoices = client.getInvoices();
+      const clientsWithStats = await Promise.all(clients.map(async (client) => {
+        const invoices = await client.getInvoices();
         const totalAmount = invoices.reduce((sum, invoice) => sum + invoice.total, 0);
         const paidAmount = invoices
           .filter(invoice => invoice.status === 'paid')
@@ -26,7 +27,7 @@ export class ClientController {
             lastInvoiceDate: invoices.length > 0 ? invoices[0].issueDate : null
           }
         };
-      });
+      }));
       
       res.json({
         success: true,
@@ -44,7 +45,7 @@ export class ClientController {
       const { id } = req.params;
       logger.info('Fetching client by ID', { id });
       
-      const client = Client.findById(id);
+      const client = await Client.findById(id);
       if (!client) {
         return res.status(404).json({
           success: false,
@@ -53,7 +54,7 @@ export class ClientController {
       }
       
       // Add client statistics
-      const invoices = client.getInvoices();
+      const invoices = await client.getInvoices();
       const totalAmount = invoices.reduce((sum, invoice) => sum + invoice.total, 0);
       const paidAmount = invoices
         .filter(invoice => invoice.status === 'paid')
@@ -84,8 +85,17 @@ export class ClientController {
     try {
       logger.info('Creating new client', { clientData: req.body });
       
-      // Check if client with same email already exists
-      const existingClient = Client.findAll().find(c => c.email === req.body.email);
+      const userId = req.user?.id;
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'User authentication required'
+        });
+      }
+      
+      // Check if client with same email already exists for this user
+      const existingClients = await Client.findByUserId(userId);
+      const existingClient = existingClients.find(c => c.email === req.body.email);
       if (existingClient) {
         return res.status(400).json({
           success: false,
@@ -93,7 +103,7 @@ export class ClientController {
         });
       }
       
-      const client = Client.create(req.body);
+      const client = await Client.create({ ...req.body, userId });
       
       logger.info('Client created successfully', { clientId: client.id });
       
@@ -113,7 +123,7 @@ export class ClientController {
       const { id } = req.params;
       logger.info('Updating client', { id, updateData: req.body });
       
-      const existingClient = Client.findById(id);
+      const existingClient = await Client.findById(id);
       if (!existingClient) {
         return res.status(404).json({
           success: false,
@@ -121,9 +131,18 @@ export class ClientController {
         });
       }
       
+      // Verify client belongs to user
+      if (req.user?.id && existingClient.userId !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+      }
+      
       // Check if email is being updated and if it conflicts with another client
       if (req.body.email && req.body.email !== existingClient.email) {
-        const emailConflict = Client.findAll().find(c => c.id !== id && c.email === req.body.email);
+        const userClients = await Client.findByUserId(existingClient.userId);
+        const emailConflict = userClients.find(c => c.id !== id && c.email === req.body.email);
         if (emailConflict) {
           return res.status(400).json({
             success: false,
@@ -132,7 +151,7 @@ export class ClientController {
         }
       }
       
-      const updatedClient = Client.update(id, req.body);
+      const updatedClient = await Client.update(id, req.body);
       
       logger.info('Client updated successfully', { clientId: id });
       
@@ -152,7 +171,7 @@ export class ClientController {
       const { id } = req.params;
       logger.info('Deleting client', { id });
       
-      const client = Client.findById(id);
+      const client = await Client.findById(id);
       if (!client) {
         return res.status(404).json({
           success: false,
@@ -160,8 +179,16 @@ export class ClientController {
         });
       }
       
+      // Verify client belongs to user
+      if (req.user?.id && client.userId !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+      }
+      
       // Check if client has any invoices
-      const invoices = client.getInvoices();
+      const invoices = await client.getInvoices();
       if (invoices.length > 0) {
         return res.status(400).json({
           success: false,
@@ -170,7 +197,7 @@ export class ClientController {
         });
       }
       
-      const deleted = Client.delete(id);
+      const deleted = await Client.delete(id);
       if (!deleted) {
         return res.status(404).json({
           success: false,
@@ -195,7 +222,7 @@ export class ClientController {
       const { id } = req.params;
       logger.info('Fetching invoices for client', { id });
       
-      const client = Client.findById(id);
+      const client = await Client.findById(id);
       if (!client) {
         return res.status(404).json({
           success: false,
@@ -203,7 +230,15 @@ export class ClientController {
         });
       }
       
-      const invoices = client.getInvoices();
+      // Verify client belongs to user
+      if (req.user?.id && client.userId !== req.user.id) {
+        return res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+      }
+      
+      const invoices = await client.getInvoices();
       
       // Calculate client summary
       const totalAmount = invoices.reduce((sum, invoice) => sum + invoice.total, 0);
@@ -240,6 +275,49 @@ export class ClientController {
       });
     } catch (error) {
       logger.error('Error fetching client invoices:', error);
+      next(error);
+    }
+  }
+
+  async searchClients(req, res, next) {
+    try {
+      const { q: searchTerm } = req.query;
+      const userId = req.user?.id;
+      
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          error: 'User authentication required'
+        });
+      }
+      
+      logger.info('Searching clients', { userId, searchTerm });
+      
+      if (!searchTerm || searchTerm.trim().length < 2) {
+        return res.json({
+          success: true,
+          data: []
+        });
+      }
+      
+      const clients = await Client.searchByName(userId, searchTerm.trim());
+      
+      // Return simplified client data for selection
+      const simplifiedClients = clients.map(client => ({
+        id: client.id,
+        name: client.name,
+        email: client.email,
+        company: client.company,
+        paymentTerms: client.paymentTerms
+      }));
+      
+      res.json({
+        success: true,
+        data: simplifiedClients,
+        count: simplifiedClients.length
+      });
+    } catch (error) {
+      logger.error('Error searching clients:', error);
       next(error);
     }
   }

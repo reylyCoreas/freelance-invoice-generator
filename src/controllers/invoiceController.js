@@ -21,11 +21,12 @@ export class InvoiceController {
         };
       }
       
-      let invoices = Invoice.findAll(filters);
+      const userId = req.user?.id;
+      let invoices = await Invoice.findAll({ ...filters, userId });
       
       // Add client information to each invoice
-      invoices = invoices.map(invoice => {
-        const client = invoice.getClient();
+      invoices = await Promise.all(invoices.map(async (invoice) => {
+        const client = await invoice.getClient();
         return {
           ...invoice,
           client: client ? {
@@ -35,7 +36,7 @@ export class InvoiceController {
             company: client.company
           } : null
         };
-      });
+      }));
       
       // Apply pagination
       const page = parseInt(req.query.page) || 1;
@@ -88,7 +89,7 @@ export class InvoiceController {
       const { id } = req.params;
       logger.info('Fetching invoice by ID', { id });
       
-      const invoice = Invoice.findById(id);
+      const invoice = await Invoice.findById(id);
       if (!invoice) {
         return res.status(404).json({
           success: false,
@@ -97,7 +98,7 @@ export class InvoiceController {
       }
       
       // Add client information
-      const client = invoice.getClient();
+      const client = await invoice.getClient();
       const invoiceWithClient = {
         ...invoice,
         client: client
@@ -118,7 +119,7 @@ export class InvoiceController {
       logger.info('Creating new invoice', { invoiceData: req.body });
       
       // Verify client exists
-      const client = Client.findById(req.body.clientId);
+      const client = await Client.findById(req.body.clientId);
       if (!client) {
         return res.status(400).json({
           success: false,
@@ -137,7 +138,8 @@ export class InvoiceController {
         items: processedItems
       };
       
-      const invoice = Invoice.create(invoiceData);
+      const userId = req.user?.id;
+      const invoice = await Invoice.create({ ...invoiceData, userId });
       
       // Add client information to response
       const invoiceWithClient = {
@@ -163,7 +165,7 @@ export class InvoiceController {
       const { id } = req.params;
       logger.info('Updating invoice', { id, updateData: req.body });
       
-      const existingInvoice = Invoice.findById(id);
+      const existingInvoice = await Invoice.findById(id);
       if (!existingInvoice) {
         return res.status(404).json({
           success: false,
@@ -173,7 +175,7 @@ export class InvoiceController {
       
       // If clientId is being updated, verify the new client exists
       if (req.body.clientId && req.body.clientId !== existingInvoice.clientId) {
-        const client = Client.findById(req.body.clientId);
+        const client = await Client.findById(req.body.clientId);
         if (!client) {
           return res.status(400).json({
             success: false,
@@ -191,10 +193,10 @@ export class InvoiceController {
         }));
       }
       
-      const updatedInvoice = Invoice.update(id, updateData);
+      const updatedInvoice = await Invoice.update(id, updateData);
       
       // Add client information
-      const client = updatedInvoice.getClient();
+      const client = await updatedInvoice.getClient();
       const invoiceWithClient = {
         ...updatedInvoice,
         client: client
@@ -218,7 +220,7 @@ export class InvoiceController {
       const { id } = req.params;
       logger.info('Deleting invoice', { id });
       
-      const invoice = Invoice.findById(id);
+      const invoice = await Invoice.findById(id);
       if (!invoice) {
         return res.status(404).json({
           success: false,
@@ -234,7 +236,7 @@ export class InvoiceController {
         });
       }
       
-      const deleted = Invoice.delete(id);
+      const deleted = await Invoice.delete(id);
       if (!deleted) {
         return res.status(404).json({
           success: false,
@@ -260,7 +262,7 @@ export class InvoiceController {
       const { status } = req.body;
       logger.info('Updating invoice status', { id, status });
       
-      const invoice = Invoice.findById(id);
+      const invoice = await Invoice.findById(id);
       if (!invoice) {
         return res.status(404).json({
           success: false,
@@ -269,8 +271,7 @@ export class InvoiceController {
       }
       
       // Update status with timestamp tracking
-      invoice.updateStatus(status);
-      const updatedInvoice = Invoice.update(id, invoice);
+      const updatedInvoice = await (await invoice.updateStatus(status));
       
       // Add client information
       const client = updatedInvoice.getClient();
@@ -298,7 +299,7 @@ export class InvoiceController {
       const { templateId, download } = req.query;
       logger.info('Generating PDF for invoice', { id, templateId });
       
-      const invoice = Invoice.findById(id);
+      const invoice = await Invoice.findById(id);
       if (!invoice) {
         return res.status(404).json({
           success: false,
@@ -311,8 +312,7 @@ export class InvoiceController {
       
       // Update invoice status to 'sent' if it was draft
       if (invoice.status === 'draft') {
-        invoice.updateStatus('sent');
-        Invoice.update(id, invoice);
+        await invoice.updateStatus('sent');
       }
       
       // Set response headers for PDF download

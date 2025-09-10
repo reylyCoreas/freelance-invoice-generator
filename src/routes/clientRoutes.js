@@ -5,6 +5,9 @@ import { validateRequest, validateParams, clientValidation } from '../validation
 const router = express.Router();
 const clientController = new ClientController();
 
+// GET /api/clients/search - Search clients
+router.get('/search', clientController.searchClients);
+
 // GET /api/clients - Get all clients
 router.get('/', clientController.getAllClients);
 
